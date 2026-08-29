@@ -12,6 +12,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_database/firebase_database.dart';
 
 // ==========================================
 // 1. MAIN ENTRY POINT & APP CONFIG
@@ -19,8 +21,13 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Memuat file .env untuk API Key Mercury 2 & ImgBB
   await dotenv.load(fileName: ".env");
+
+  try {
+    await Firebase.initializeApp();
+  } catch (e) {
+    debugPrint("Firebase init error: $e");
+  }
 
   await _requestAppPermissions();
 
@@ -613,9 +620,8 @@ class _MainChatScreenState extends State<MainChatScreen> {
   String activeClassChatTab = "Kelas 10";
   bool isGroupMuted = false;
   
-  // Smart Polling Variables
-  Timer? _smartPollingTimer;
-  String? _lastClassMessageKey; 
+  StreamSubscription<DatabaseEvent>? _classChatSubscription;
+  StreamSubscription<DatabaseEvent>? _pinnedMessageSubscription;
   
   List<Map<String, dynamic>> _currentClassMessages = [];
   Map<String, dynamic>? _replyingToMessage;
@@ -638,7 +644,7 @@ class _MainChatScreenState extends State<MainChatScreen> {
   String get systemInstruction {
     if (isTeacher) {
       return """
-Kamu adalah Keisha, AI Senior Software Engineer, Master Game Developer, & Asisten AI Pribadi dari Kepala Sekolah / Guru Informatika Mas Kahfi (Lahir: 26 Oktober 1996).
+Kamu adalah Keisha, AI Senior Software Engineer, Master Game Developer, & Asisten AI Pribadi dari Kepala Sekolah / Guru Informatika Mas Kahfi.
 
 ATURAN KHUSUS UNTUK GURU (MAS KAHFI):
 1. Pengguna saat ini adalah GURU KAMU. Berikan jawaban langsung pada inti perintah dengan bahasa yang sopan, menghormati, manis, dan berwibawa.
@@ -651,7 +657,7 @@ ATURAN KHUSUS UNTUK GURU (MAS KAHFI):
 """;
     } else {
       return """
-Kamu adalah Keisha, AI Senior Software Engineer, Master Game Developer, & Asisten AI Pribadi dari Kepala Sekolah / Guru Informatika Mas Kahfi (Lahir: 26 Oktober 1996).
+Kamu adalah Keisha, AI Senior Software Engineer, Master Game Developer, & Asisten AI Pribadi dari Kepala Sekolah / Guru Informatika Mas Kahfi.
 
 ATURAN KETAT UNTUK SISWA:
 1. Jawab langsung pada inti pertanyaan dengan gaya bahasa edukatif, ramah, dan membimbing.
@@ -675,38 +681,37 @@ ATURAN KETAT UNTUK SISWA:
         Future.delayed(const Duration(milliseconds: 300), () => _scrollToBottom());
       }
     });
-
-    _smartPollingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (mounted) _syncNewClassChatMessages();
-    });
   }
   
-  Future<void> _syncNewClassChatMessages() async {
-    try {
-      String classKey = activeClassChatTab.replaceAll(' ', '_').toLowerCase();
-      await _fetchUsersMapSmartCache();
+  void _listenToClassChat() async {
+    String classKey = activeClassChatTab.replaceAll(' ', '_').toLowerCase();
+    await _fetchUsersMapSmartCache();
 
-      final pinRes = await http.get(Uri.parse("$_firebaseUrl/class_chats/${classKey}_pinned.json"));
-      if (pinRes.statusCode == 200 && pinRes.body != "null") {
-        Map<String, dynamic> pinData = jsonDecode(pinRes.body);
+    _pinnedMessageSubscription?.cancel();
+    _pinnedMessageSubscription = FirebaseDatabase.instance
+        .ref("class_chats/${classKey}_pinned")
+        .onValue
+        .listen((event) {
+      if (event.snapshot.value != null) {
+        Map<dynamic, dynamic> pinData = event.snapshot.value as Map<dynamic, dynamic>;
         if (mounted) setState(() => _pinnedMessage = pinData['message']);
       } else {
         if (mounted) setState(() => _pinnedMessage = null);
       }
-      
-      String url = _lastClassMessageKey == null 
-          ? "$_firebaseUrl/class_chats/$classKey.json?orderBy=\"\$key\"&limitToLast=30"
-          : "$_firebaseUrl/class_chats/$classKey.json?orderBy=\"\$key\"&startAt=\"$_lastClassMessageKey\"";
+    });
 
-      final res = await http.get(Uri.parse(url));
-
-      if (res.statusCode == 200 && res.body != "null") {
-        Map<String, dynamic> raw = jsonDecode(res.body);
+    _classChatSubscription?.cancel();
+    _classChatSubscription = FirebaseDatabase.instance
+        .ref("class_chats/$classKey")
+        .orderByKey()
+        .limitToLast(50)
+        .onValue
+        .listen((event) {
+      if (event.snapshot.value != null) {
+        Map<dynamic, dynamic> raw = event.snapshot.value as Map<dynamic, dynamic>;
         List<Map<String, dynamic>> newMsgs = [];
         
         raw.forEach((key, val) {
-          if (_lastClassMessageKey != null && key == _lastClassMessageKey) return; 
-
           String sender = val["sender"] ?? "Siswa";
           Color computedColor = const Color(0xFF1E293B);
           String computedBadge = "";
@@ -748,7 +753,7 @@ ATURAN KETAT UNTUK SISWA:
           }
 
           newMsgs.add({
-            "id": key,
+            "id": key.toString(),
             "sender": sender,
             "display_name": val["display_name"] ?? sender,
             "message": val["message"] ?? "",
@@ -763,19 +768,17 @@ ATURAN KETAT UNTUK SISWA:
         
         if (newMsgs.isNotEmpty) {
           newMsgs.sort((a, b) => a["timestamp"].compareTo(b["timestamp"]));
-          _lastClassMessageKey = newMsgs.last["id"];
           if (mounted) {
             setState(() {
-              if (_currentClassMessages.isEmpty) _currentClassMessages = newMsgs;
-              else _currentClassMessages.addAll(newMsgs);
+              _currentClassMessages = newMsgs;
             });
-            _scrollToBottomClassChat(force: false);
+            _scrollToBottomClassChat(force: true);
           }
         }
       } else {
-        if (_lastClassMessageKey == null && mounted) setState(() => _currentClassMessages = []);
+        if (mounted) setState(() => _currentClassMessages = []);
       }
-    } catch (_) {}
+    });
   }
 
   Future<void> _fetchUsersMapSmartCache() async {
@@ -827,6 +830,7 @@ ATURAN KETAT UNTUK SISWA:
     if (_messages.isEmpty && !_isGreetingLoading) {
       _fetchDynamicGreeting();
     }
+    _listenToClassChat();
   }
 
   Future<void> _fetchUserProfileFromCloud() async {
@@ -931,7 +935,8 @@ ATURAN KETAT UNTUK SISWA:
   @override
   void dispose() {
     _inputFocusNode.dispose();
-    _smartPollingTimer?.cancel();
+    _classChatSubscription?.cancel();
+    _pinnedMessageSubscription?.cancel();
     _typewriterTimer?.cancel();
     _classChatInputController.dispose();
     _inputController.dispose();
@@ -1588,22 +1593,12 @@ ATURAN KETAT UNTUK SISWA:
         };
       }
 
-      await http.post(
-        Uri.parse("$_firebaseUrl/class_chats/$classKey.json"),
-        body: jsonEncode(payload),
-      );
+      await FirebaseDatabase.instance.ref("class_chats/$classKey").push().set(payload);
 
-      if (mounted) {
-        setState(() => _replyingToMessage = null);
-      }
+      if (mounted) setState(() => _replyingToMessage = null);
 
       _incrementXP(5);
       await _checkAktivisJumatBadge();
-      
-      if (mounted) {
-        _syncNewClassChatMessages();
-        _scrollToBottomClassChat(force: true);
-      }
     } catch (_) {}
   }
 
@@ -2634,10 +2629,9 @@ ATURAN KETAT UNTUK SISWA:
                         onTap: () {
                           setState(() {
                             activeClassChatTab = cName;
-                            _lastClassMessageKey = null; 
                             _currentClassMessages.clear();
                           });
-                          _syncNewClassChatMessages();
+                          _listenToClassChat();
                         },
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
@@ -2667,7 +2661,7 @@ ATURAN KETAT UNTUK SISWA:
                       if (isTeacher)
                         InkWell(
                           onTap: () async {
-                            await http.delete(Uri.parse("$_firebaseUrl/class_chats/${activeClassChatTab.replaceAll(' ', '_').toLowerCase()}_pinned.json"));
+                            await FirebaseDatabase.instance.ref("class_chats/${activeClassChatTab.replaceAll(' ', '_').toLowerCase()}_pinned").remove();
                             setState(() => _pinnedMessage = null);
                           },
                           child: const Icon(Icons.close, size: 16, color: Colors.grey),
@@ -2739,11 +2733,7 @@ ATURAN KETAT UNTUK SISWA:
                                                 title: const Text("Pin Pengumuman Kelas"),
                                                 onTap: () async {
                                                   Navigator.pop(ctx);
-                                                  await http.put(
-                                                    Uri.parse("$_firebaseUrl/class_chats/${activeClassChatTab.replaceAll(' ', '_').toLowerCase()}_pinned.json"),
-                                                    body: jsonEncode({"message": msgContent}),
-                                                  );
-                                                  _syncNewClassChatMessages();
+                                                  await FirebaseDatabase.instance.ref("class_chats/${activeClassChatTab.replaceAll(' ', '_').toLowerCase()}_pinned").set({"message": msgContent});
                                                 },
                                               ),
                                               if (!isMe)
@@ -3282,7 +3272,6 @@ ATURAN KETAT UNTUK SISWA:
                       IconButton(
                         icon: const Icon(Icons.forum_outlined, color: Color(0xFF616BF2), size: 26),
                         onPressed: () {
-                          _syncNewClassChatMessages();
                           _scaffoldKey.currentState?.openEndDrawer();
                         },
                       ),
