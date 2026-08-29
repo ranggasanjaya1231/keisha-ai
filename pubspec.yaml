@@ -1,0 +1,39 @@
+name: keisha_ai
+description: Keisha AI Application - Assistant & Informatics Classroom
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_dotenv: ^5.1.0
+
+  # --- HTTP & Network ---
+  http: ^1.2.0
+
+  # --- Storage & Permissions ---
+  path_provider: ^2.1.2
+  permission_handler: ^11.3.1
+  gal: ^1.9.1
+
+  # --- Media & Image Handling ---
+  image_picker: ^1.1.2
+  flutter_image_compress: ^2.3.0
+
+  # --- Security Core ---
+  flutter_secure_storage: ^9.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+
+  # Mendaftarkan file .env sebagai aset aplikasi
+  assets:
+    - .env
