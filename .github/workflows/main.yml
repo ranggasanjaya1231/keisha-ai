@@ -1,0 +1,57 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.6'
+          channel: 'stable'
+
+      - name: Recreate Android Project
+        run: |
+          rm -rf android
+          flutter create . --platforms=android --org com.keisha.ai --project-name keisha_ai
+
+      # PERBAIKAN: Otomatis ubah minSdkVersion menjadi 21 untuk mendukung flutter_image_compress
+      - name: Update MinSdkVersion to 21
+        run: |
+          GRADLE_PATH="android/app/build.gradle"
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' $GRADLE_PATH
+          sed -i 's/minSdkVersion localProperties.getProperty.*minSdkVersion.*/minSdkVersion 21/g' $GRADLE_PATH
+
+      # Injeksi Izin Resmi ke Manifest
+      - name: Auto Inject Permissions to Manifest
+        run: |
+          MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
+          PERMISSIONS="<uses-permission android:name=\"android.permission.INTERNET\"/>\n<uses-permission android:name=\"android.permission.CAMERA\"/>\n<uses-permission android:name=\"android.permission.RECORD_AUDIO\"/>\n<uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\"/>\n<uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\"/>\n<uses-permission android:name=\"android.permission.READ_MEDIA_IMAGES\"/>\n<uses-permission android:name=\"android.permission.READ_MEDIA_AUDIO\"/>"
+          sed -i "/<manifest/a $PERMISSIONS" $MANIFEST_PATH
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: keisha-ai-test
+          path: build/app/outputs/flutter-apk/app-release.apk
