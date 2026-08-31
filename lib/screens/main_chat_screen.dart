@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:firebase_core/firebase_core.dart'; // Ditambahkan untuk konfigurasi URL manual
 import 'package:firebase_database/firebase_database.dart';
 
 // Import file modular (Menggunakan '../' karena file ini berada di dalam folder lib/screens/)
@@ -84,6 +85,12 @@ class _MainChatScreenState extends State<MainChatScreen> {
 
   final String _firebaseUrl = "https://keisha-informatics-app-default-rtdb.asia-southeast1.firebasedatabase.app";
 
+  // PEMBARUAN: Memaksa SDK menggunakan URL Asia agar tidak nyasar ke server default US
+  FirebaseDatabase get _realtimeDb => FirebaseDatabase.instanceFor(
+        app: Firebase.app(),
+        databaseURL: _firebaseUrl,
+      );
+
   final List<Map<String, String>> educationalStickers = [
     {"name": "Izin Tanya", "url": "https://img.icons8.com/color/96/000000/ask-question.png"},
     {"name": "Paham!", "url": "https://img.icons8.com/color/96/000000/idea.png"},
@@ -140,7 +147,7 @@ ATURAN KETAT UNTUK SISWA:
     await _fetchUsersMapSmartCache();
 
     _pinnedMessageSubscription?.cancel();
-    _pinnedMessageSubscription = FirebaseDatabase.instance
+    _pinnedMessageSubscription = _realtimeDb // <-- Menggunakan database khusus Asia
         .ref("class_chats/${classKey}_pinned")
         .onValue
         .listen((event) {
@@ -153,7 +160,7 @@ ATURAN KETAT UNTUK SISWA:
     });
 
     _classChatSubscription?.cancel();
-    _classChatSubscription = FirebaseDatabase.instance
+    _classChatSubscription = _realtimeDb // <-- Menggunakan database khusus Asia
         .ref("class_chats/$classKey")
         .orderByKey()
         .limitToLast(50)
@@ -271,8 +278,6 @@ ATURAN KETAT UNTUK SISWA:
         setState(() {
           displayName = username;
           studentClass = "Kelas 10";
-          isTeacher = false;
-          if (!isTeacher) activeClassChatTab = studentClass!;
         });
       }
     }
@@ -416,6 +421,8 @@ ATURAN KETAT UNTUK SISWA:
         isTeacher = args["is_teacher"] ?? false;
         if (!isTeacher && studentClass != null) activeClassChatTab = studentClass!;
       });
+      // PENTING: Refresh listener kelas agar chat langsung muncul setelah data argumen masuk!
+      _listenToClassChat();
     }
   }
 
@@ -1044,7 +1051,7 @@ ATURAN KETAT UNTUK SISWA:
         };
       }
 
-      await FirebaseDatabase.instance.ref("class_chats/$classKey").push().set(payload);
+      await _realtimeDb.ref("class_chats/$classKey").push().set(payload);
 
       if (mounted) setState(() => _replyingToMessage = null);
 
@@ -2207,7 +2214,7 @@ ATURAN KETAT UNTUK SISWA:
                       if (isTeacher)
                         InkWell(
                           onTap: () async {
-                            await FirebaseDatabase.instance.ref("class_chats/${activeClassChatTab.replaceAll(' ', '_').toLowerCase()}_pinned").remove();
+                            await _realtimeDb.ref("class_chats/${activeClassChatTab.replaceAll(' ', '_').toLowerCase()}_pinned").remove();
                             setState(() => _pinnedMessage = null);
                           },
                           child: const Icon(Icons.close, size: 16, color: Colors.grey),
@@ -2279,7 +2286,7 @@ ATURAN KETAT UNTUK SISWA:
                                                 title: const Text("Pin Pengumuman Kelas"),
                                                 onTap: () async {
                                                   Navigator.pop(ctx);
-                                                  await FirebaseDatabase.instance.ref("class_chats/${activeClassChatTab.replaceAll(' ', '_').toLowerCase()}_pinned").set({"message": msgContent});
+                                                  await _realtimeDb.ref("class_chats/${activeClassChatTab.replaceAll(' ', '_').toLowerCase()}_pinned").set({"message": msgContent});
                                                 },
                                               ),
                                               if (!isMe)
