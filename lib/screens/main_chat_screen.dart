@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:firebase_core/firebase_core.dart'; // Ditambahkan untuk konfigurasi URL manual
+import 'package:firebase_core/firebase_core.dart'; 
 import 'package:firebase_database/firebase_database.dart';
 
 // Import file modular (Menggunakan '../' karena file ini berada di dalam folder lib/screens/)
@@ -184,7 +184,7 @@ ATURAN KETAT UNTUK SISWA:
                  else if (uData["roles"] is Map) assigned = (uData["roles"] as Map).values.map((e)=>e.toString()).toList();
              }
              int uXp = (uData["xp"] is int) ? uData["xp"] : (int.tryParse(uData["xp"]?.toString() ?? "0") ?? 0);
-             bool isUserGuru = (uData["is_teacher"] == true);
+             bool isUserGuru = (uData["is_teacher"] == true || uData["is_teacher"] == "true");
              
              List<RoleBadge> badges = [];
              if (isUserGuru) {
@@ -253,6 +253,7 @@ ATURAN KETAT UNTUK SISWA:
     } catch (_) {}
   }
 
+  // PEMBARUAN: Parse status boolean untuk Sinkronisasi Mode Guru Local
   Future<void> _loadUserSession() async {
     if (widget.initialUser != null) {
       username = widget.initialUser!;
@@ -265,8 +266,8 @@ ATURAN KETAT UNTUK SISWA:
         setState(() {
           displayName = userData["display_name"] ?? username;
           studentClass = userData["class"] ?? "Kelas 10";
-          isFemale = userData["is_female"] ?? false;
-          isTeacher = userData["is_teacher"] ?? false;
+          isFemale = userData["is_female"] == true || userData["is_female"] == "true";
+          isTeacher = userData["is_teacher"] == true || userData["is_teacher"] == "true";
           profileImageBase64 = userData["profile_pic_b64"];
           if (!isTeacher && studentClass != null) {
             activeClassChatTab = studentClass!;
@@ -290,6 +291,7 @@ ATURAN KETAT UNTUK SISWA:
     _listenToClassChat();
   }
 
+  // PEMBARUAN: Memperbarui LocalDB langsung setelah mem-fetch status Cloud
   Future<void> _fetchUserProfileFromCloud() async {
     try {
       final res = await http.get(Uri.parse("$_firebaseUrl/users/$username.json"));
@@ -299,6 +301,19 @@ ATURAN KETAT UNTUK SISWA:
           setState(() {
             if (data["profile_pic_b64"] != null) profileImageBase64 = data["profile_pic_b64"];
             if (data["display_name"] != null) displayName = data["display_name"];
+            if (data["class"] != null) studentClass = data["class"];
+            if (data["is_female"] != null) isFemale = data["is_female"] == true || data["is_female"] == "true";
+            if (data["is_teacher"] != null) isTeacher = data["is_teacher"] == true || data["is_teacher"] == "true";
+          });
+          
+          DatabaseHelper.loadLocalDb().then((db) {
+            if (!db.containsKey(username)) db[username] = {};
+            db[username]["display_name"] = displayName;
+            db[username]["class"] = studentClass;
+            db[username]["is_teacher"] = isTeacher;
+            db[username]["is_female"] = isFemale;
+            if (profileImageBase64 != null) db[username]["profile_pic_b64"] = profileImageBase64;
+            DatabaseHelper.saveLocalDb(db);
           });
         }
       }
@@ -344,7 +359,7 @@ ATURAN KETAT UNTUK SISWA:
       final res = await http.get(Uri.parse("$_firebaseUrl/users/$target.json"));
       if (res.statusCode == 200 && res.body != "null") {
         Map<String, dynamic> uData = jsonDecode(res.body);
-        if (uData["is_teacher"] == true) return;
+        if (uData["is_teacher"] == true || uData["is_teacher"] == "true") return;
 
         int oldXp = (uData["xp"] is int) ? uData["xp"] : (int.tryParse(uData["xp"]?.toString() ?? "0") ?? 0);
         int newXp = oldXp + amount;
@@ -416,9 +431,9 @@ ATURAN KETAT UNTUK SISWA:
       setState(() {
         username = args["username"] ?? username;
         displayName = args["display_name"] ?? displayName;
-        isFemale = args["is_female"] ?? false;
+        isFemale = args["is_female"] == true || args["is_female"] == "true";
         studentClass = args["class"] ?? studentClass;
-        isTeacher = args["is_teacher"] ?? false;
+        isTeacher = args["is_teacher"] == true || args["is_teacher"] == "true";
         if (!isTeacher && studentClass != null) activeClassChatTab = studentClass!;
       });
       // PENTING: Refresh listener kelas agar chat langsung muncul setelah data argumen masuk!
@@ -541,15 +556,21 @@ ATURAN KETAT UNTUK SISWA:
     }
   }
 
+  // PEMBARUAN: Menyembunyikan XP box jika akun adalah guru 
   void _showUserProfileShowcase(String userKey, String dispName, String userRole) async {
     String? fetchedPicBase64;
     List<String> assignedRoles = [];
     int currentXp = 0;
+    bool isUserGuru = false; 
     
     try {
       final res = await http.get(Uri.parse("$_firebaseUrl/users/$userKey.json"));
       if (res.statusCode == 200 && res.body != "null") {
         Map<String, dynamic> uData = jsonDecode(res.body);
+        
+        if (uData["is_teacher"] != null) {
+          isUserGuru = uData["is_teacher"] == true || uData["is_teacher"] == "true";
+        }
         
         if (uData["roles"] != null) {
           if (uData["roles"] is List) {
@@ -570,7 +591,7 @@ ATURAN KETAT UNTUK SISWA:
     int level = (currentXp / 100).floor() + 1;
 
     List<RoleBadge> badges = [];
-    if (userRole == "guru") {
+    if (isUserGuru || userRole == "guru" || userRole == "Guru Informatika") {
       badges.add(allDefinedRoles.firstWhere((r) => r.id == "guru"));
     } else {
       for (var rId in assignedRoles) {
@@ -633,27 +654,30 @@ ATURAN KETAT UNTUK SISWA:
               }).toList(),
             ),
             const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: Theme.of(context).cardColor, borderRadius: BorderRadius.circular(12)),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  Column(
-                    children: [
-                      Text("$currentXp", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF616BF2))),
-                      const Text("Total XP", style: TextStyle(fontSize: 10, color: Colors.grey)),
-                    ],
-                  ),
-                  Column(
-                    children: [
-                      Text("Lvl $level", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF00D2FF))),
-                      const Text("Level", style: TextStyle(fontSize: 10, color: Colors.grey)),
-                    ],
-                  ),
-                ],
+            
+            if (!isUserGuru)
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: Theme.of(context).cardColor, borderRadius: BorderRadius.circular(12)),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    Column(
+                      children: [
+                        Text("$currentXp", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF616BF2))),
+                        const Text("Total XP", style: TextStyle(fontSize: 10, color: Colors.grey)),
+                      ],
+                    ),
+                    Column(
+                      children: [
+                        Text("Lvl $level", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF00D2FF))),
+                        const Text("Level", style: TextStyle(fontSize: 10, color: Colors.grey)),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
+
             if (userKey == username) ...[
               const SizedBox(height: 16),
               ElevatedButton.icon(
@@ -826,7 +850,7 @@ ATURAN KETAT UNTUK SISWA:
               freshUsersMap.forEach((k, v) {
                 if (v is Map) {
                   String actualUsername = v["username"] ?? k;
-                  bool isTeacherAccount = (v["is_teacher"] == true);
+                  bool isTeacherAccount = (v["is_teacher"] == true || v["is_teacher"] == "true");
                   
                   if (!isTeacherAccount) {
                     List<String> assigned = [];
@@ -2105,7 +2129,7 @@ ATURAN KETAT UNTUK SISWA:
                 children: userList.map((uKey) {
                   var uData = _cachedUsersMap[uKey];
                   String dName = uData["display_name"] ?? uKey;
-                  bool isUserTeacher = uData["is_teacher"] ?? false;
+                  bool isUserTeacher = uData["is_teacher"] == true || uData["is_teacher"] == "true";
 
                   return Card(
                     margin: const EdgeInsets.only(bottom: 6),
