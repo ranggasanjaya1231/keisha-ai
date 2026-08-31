@@ -11,6 +11,10 @@ dependencies:
     sdk: flutter
   flutter_dotenv: ^5.1.0
 
+  # --- Firebase Ecosystem (Real-time Stream) ---
+  firebase_core: ^3.6.0
+  firebase_database: ^11.1.4
+
   # --- HTTP & Network ---
   http: ^1.2.0
 
