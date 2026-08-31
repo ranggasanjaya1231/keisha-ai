@@ -57,7 +57,7 @@ class _MainChatScreenState extends State<MainChatScreen> {
   String displayName = "Mas Kahfi";
   String? studentClass; 
   String? profileImageBase64;
-  bool isTeacher = true;
+  bool isTeacher = false;
   bool isFemale = false;
   bool isLoading = false;
   bool _isGreetingLoading = false;
@@ -177,7 +177,7 @@ ATURAN KETAT UNTUK SISWA:
                  else if (uData["roles"] is Map) assigned = (uData["roles"] as Map).values.map((e)=>e.toString()).toList();
              }
              int uXp = (uData["xp"] is int) ? uData["xp"] : (int.tryParse(uData["xp"]?.toString() ?? "0") ?? 0);
-             bool isUserGuru = uData["is_teacher"] == true || sender.toLowerCase().contains("kahfi") || sender.toLowerCase().contains("muzaini");
+             bool isUserGuru = (uData["is_teacher"] == true);
              
              List<RoleBadge> badges = [];
              if (isUserGuru) {
@@ -259,7 +259,7 @@ ATURAN KETAT UNTUK SISWA:
           displayName = userData["display_name"] ?? username;
           studentClass = userData["class"] ?? "Kelas 10";
           isFemale = userData["is_female"] ?? false;
-          isTeacher = userData["is_teacher"] ?? (username.contains("kahfi") || username.contains("muzaini"));
+          isTeacher = userData["is_teacher"] ?? false;
           profileImageBase64 = userData["profile_pic_b64"];
           if (!isTeacher && studentClass != null) {
             activeClassChatTab = studentClass!;
@@ -271,7 +271,7 @@ ATURAN KETAT UNTUK SISWA:
         setState(() {
           displayName = username;
           studentClass = "Kelas 10";
-          isTeacher = username.contains("kahfi") || username.contains("muzaini");
+          isTeacher = false;
           if (!isTeacher) activeClassChatTab = studentClass!;
         });
       }
@@ -333,12 +333,14 @@ ATURAN KETAT UNTUK SISWA:
 
   Future<void> _incrementXP(int amount, {String? targetUsername}) async {
     String target = targetUsername ?? username;
-    if (target.contains("kahfi") || target.contains("muzaini")) return; 
+    if (isTeacher && target == username) return;
     
     try {
       final res = await http.get(Uri.parse("$_firebaseUrl/users/$target.json"));
       if (res.statusCode == 200 && res.body != "null") {
         Map<String, dynamic> uData = jsonDecode(res.body);
+        if (uData["is_teacher"] == true) return;
+
         int oldXp = (uData["xp"] is int) ? uData["xp"] : (int.tryParse(uData["xp"]?.toString() ?? "0") ?? 0);
         int newXp = oldXp + amount;
         String targetDispName = uData["display_name"] ?? target;
@@ -411,7 +413,7 @@ ATURAN KETAT UNTUK SISWA:
         displayName = args["display_name"] ?? displayName;
         isFemale = args["is_female"] ?? false;
         studentClass = args["class"] ?? studentClass;
-        isTeacher = args["is_teacher"] ?? (username.contains("kahfi") || username.contains("muzaini"));
+        isTeacher = args["is_teacher"] ?? false;
         if (!isTeacher && studentClass != null) activeClassChatTab = studentClass!;
       });
     }
@@ -561,7 +563,7 @@ ATURAN KETAT UNTUK SISWA:
     int level = (currentXp / 100).floor() + 1;
 
     List<RoleBadge> badges = [];
-    if (userRole == "guru" || userKey.toLowerCase().contains("kahfi" ) || userKey.toLowerCase().contains("muzaini")) {
+    if (userRole == "guru") {
       badges.add(allDefinedRoles.firstWhere((r) => r.id == "guru"));
     } else {
       for (var rId in assignedRoles) {
@@ -817,10 +819,7 @@ ATURAN KETAT UNTUK SISWA:
               freshUsersMap.forEach((k, v) {
                 if (v is Map) {
                   String actualUsername = v["username"] ?? k;
-                  
-                  bool isTeacherAccount = (v["is_teacher"] == true) || 
-                                          actualUsername.toLowerCase().contains("kahfi") || 
-                                          actualUsername.toLowerCase().contains("muzaini");
+                  bool isTeacherAccount = (v["is_teacher"] == true);
                   
                   if (!isTeacherAccount) {
                     List<String> assigned = [];
