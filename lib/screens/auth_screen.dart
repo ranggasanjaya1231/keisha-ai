@@ -49,7 +49,8 @@ class _AuthScreenState extends State<AuthScreen> {
     }
     if (displayName.isEmpty) displayName = username;
 
-    bool isTeacherAccount = (teacherToken == "INFGURU") || username.contains("kahfi") || username.contains("muzaini");
+    // KODE BARU: Hanya sah menjadi guru jika memasukkan Kode Akses Guru "INFGURU"
+    bool isTeacherAccount = (teacherToken == "INFGURU");
     Map<String, dynamic> db = await DatabaseHelper.loadLocalDb();
 
     if (isRegister) {
