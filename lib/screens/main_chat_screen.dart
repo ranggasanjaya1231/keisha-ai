@@ -1514,19 +1514,75 @@ ATURAN KETAT UNTUK SISWA:
 
     Map<int, String> userAnswers = {};
     Map<int, TextEditingController> essayControllers = {};
-    List<int> shuffledIndices = List.generate(totalQuestions, (index) => index);
     
-    // TIMER LOGIC (15 Menit)
-    int remainingSeconds = 15 * 60;
-    Timer? examTimer;
-
-    if (taskType == "Essay") {
-        for(int i = 1; i <= totalQuestions; i++) {
-           essayControllers[i] = TextEditingController();
+    // PEMBARUAN: Parser Soal Acak Pintar
+    List<Map<String, dynamic>> quizItems = [];
+    bool isParsed = false;
+    
+    if (taskType == "Pilihan Ganda") {
+      String temp = rawContent;
+      bool success = true;
+      for (int i = 1; i <= totalQuestions; i++) {
+        int start = temp.indexOf("$i.");
+        if (start == -1) {
+          success = false;
+          break; // Jika format AI rusak/tidak sesuai
         }
+        int end = temp.indexOf("${i + 1}.");
+        String qText = "";
+        if (end != -1) {
+          qText = temp.substring(start, end).trim();
+        } else {
+          qText = temp.substring(start).trim();
+        }
+        String correctKey = (i - 1) < answerKeys.length ? answerKeys[i - 1].toString() : "";
+        quizItems.add({
+          "original_index": i - 1,
+          "text": qText,
+          "key": correctKey
+        });
+      }
+      
+      if (success && quizItems.length == totalQuestions) {
+        isParsed = true;
+        // Acak posisi soal HANYA untuk siswa
+        if (!isTeacher) quizItems.shuffle();
+      } else {
+        // Fallback jika AI gagal men-generate nomor dengan benar
+        quizItems.clear();
+        isParsed = false;
+        for (int i = 0; i < totalQuestions; i++) {
+          quizItems.add({
+            "original_index": i,
+            "key": i < answerKeys.length ? answerKeys[i].toString() : ""
+          });
+        }
+      }
+    } else if (taskType == "Essay") {
+      for(int i = 1; i <= totalQuestions; i++) {
+         essayControllers[i] = TextEditingController();
+      }
     }
 
+    // PEMBARUAN: Timer Anti-Cheat Berbasis Local DB
+    Map<String, dynamic> localDb = await DatabaseHelper.loadLocalDb();
+    String timerKey = "timer_${taskId}_$username";
+    int startTimeMs = localDb[timerKey] ?? DateTime.now().millisecondsSinceEpoch;
+    
+    if (!localDb.containsKey(timerKey) && !isTeacher) {
+      localDb[timerKey] = startTimeMs;
+      await DatabaseHelper.saveLocalDb(localDb);
+    }
+    
+    int elapsedSeconds = (DateTime.now().millisecondsSinceEpoch - startTimeMs) ~/ 1000;
+    int remainingSeconds = (15 * 60) - elapsedSeconds;
+    if (remainingSeconds < 0) remainingSeconds = 0;
+    
+    Timer? examTimer;
+    bool isSubmitting = false;
+
     if (!mounted) return;
+    
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1536,13 +1592,88 @@ ATURAN KETAT UNTUK SISWA:
       builder: (context) => StatefulBuilder(
         builder: (context, setModalState) {
           
+          Future<void> performSubmit() async {
+             if (isSubmitting) return;
+             setModalState(() => isSubmitting = true);
+             examTimer?.cancel();
+             
+             // Hapus State Timer di LocalDB karena sudah sukses kumpul
+             Map<String, dynamic> db = await DatabaseHelper.loadLocalDb();
+             db.remove(timerKey);
+             await DatabaseHelper.saveLocalDb(db);
+
+             String ansSummary = "";
+             int? finalScore;
+             int correctCount = 0;
+
+             if (taskType == "Pilihan Ganda") {
+                 List<int> wrongNumbers = [];
+                 for (int i = 0; i < totalQuestions; i++) {
+                   var item = quizItems[i]; 
+                   int actualIndex = item["original_index"];
+                   String studentAns = userAnswers[actualIndex] ?? "";
+                   String correctAns = item["key"];
+                   
+                   if (studentAns == correctAns) {
+                     correctCount++;
+                   } else {
+                     wrongNumbers.add(i + 1); // Indeks visual UI
+                   }
+                 }
+                 finalScore = ((correctCount / totalQuestions) * 100).round();
+                 ansSummary = userAnswers.entries.map((e) => "Soal Asli No ${e.key + 1}: ${e.value}").join(", ");
+                 
+                 setState(() {
+                   _messages.add({
+                     'sender': 'ai',
+                     'text': 'Tugas "$title" telah berhasil diserahkan!\nNilai Kamu: $finalScore/100 (Benar $correctCount dari $totalQuestions soal).\n${wrongNumbers.isNotEmpty ? "Nomor urut di layar yang perlu diperbaiki: " + wrongNumbers.join(", ") : "Sempurna! Semua benar 100."}'
+                   });
+                 });
+             } else {
+                 List<String> essayAnswers = [];
+                 essayControllers.forEach((key, ctrl) {
+                     essayAnswers.add("Soal $key: ${ctrl.text}");
+                 });
+                 ansSummary = essayAnswers.join("\n\n");
+                 
+                 setState(() {
+                   _messages.add({
+                     'sender': 'ai',
+                     'text': 'Tugas Essay "$title" telah berhasil diserahkan ke Guru Informatika! (Saran AI: Menunggu validasi manual dari Mas Kahfi).'
+                   });
+                 });
+             }
+
+             String currentClassStr = studentClass ?? "Kelas 10";
+             
+             await http.post(
+               Uri.parse("$_firebaseUrl/submissions.json"),
+               body: jsonEncode({
+                 "task_id": taskId,
+                 "username": username,
+                 "student": "$displayName ($username - $currentClassStr)",
+                 "type": taskType,
+                 "answers": ansSummary,
+                 "score": finalScore,
+                 "correct": correctCount,
+                 "total": totalQuestions,
+                 "submitted_at": DateTime.now().toString()
+               }),
+             );
+             _scrollToBottom();
+             if(mounted) Navigator.pop(context);
+          }
+          
           if (examTimer == null && !isTeacher) {
             examTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-              if (remainingSeconds > 0) {
-                setModalState(() => remainingSeconds--);
-              } else {
+              int elapsed = (DateTime.now().millisecondsSinceEpoch - startTimeMs) ~/ 1000;
+              int rem = (15 * 60) - elapsed;
+              if (rem <= 0) {
                 timer.cancel();
-                Navigator.pop(context); // Auto close
+                setModalState(() => remainingSeconds = 0);
+                performSubmit(); // Paksa otomatis submit jika waktu habis
+              } else {
+                setModalState(() => remainingSeconds = rem);
               }
             });
           }
@@ -1603,7 +1734,10 @@ ATURAN KETAT UNTUK SISWA:
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(rawContent, style: const TextStyle(fontSize: 14)),
+                        // Tampilkan raw text JIKA parsing gagal ATAU mode Essay
+                        if (!isParsed || taskType == "Essay") 
+                          Text(rawContent, style: const TextStyle(fontSize: 14)),
+                          
                         const SizedBox(height: 20),
                         const Text("Lembar Jawaban Siswa:", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                         const SizedBox(height: 10),
@@ -1612,40 +1746,59 @@ ATURAN KETAT UNTUK SISWA:
                           physics: const NeverScrollableScrollPhysics(),
                           itemCount: totalQuestions,
                           itemBuilder: (context, idx) {
-                            int actualQuestionIndex = shuffledIndices[idx]; 
                             int displayNum = idx + 1; 
 
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 12),
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade700), borderRadius: BorderRadius.circular(12)),
-                              child: taskType == "Pilihan Ganda"
-                                  ? Row(
-                                      children: [
-                                        SizedBox(
-                                          width: 75,
-                                          child: Text("Soal $displayNum:", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                                        ),
-                                        const SizedBox(width: 4),
-                                        Expanded(
-                                          child: Row(
-                                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                            children: ["A", "B", "C", "D"].map((opt) {
-                                              bool isSelected = userAnswers[actualQuestionIndex] == opt;
-                                              return InkWell(
-                                                onTap: () => setModalState(() => userAnswers[actualQuestionIndex] = opt),
-                                                child: CircleAvatar(
-                                                  radius: 18,
-                                                  backgroundColor: isSelected ? const Color(0xFF616BF2) : Colors.grey.shade800,
-                                                  child: Text(opt, style: TextStyle(color: isSelected ? Colors.white : Colors.white70, fontWeight: FontWeight.bold)),
-                                                ),
-                                              );
-                                            }).toList(),
-                                          ),
-                                        )
-                                      ],
-                                    )
-                                  : Column(
+                            if (taskType == "Pilihan Ganda") {
+                               var item = quizItems[idx];
+                               int actualQuestionIndex = item["original_index"];
+                               
+                               return Container(
+                                 margin: const EdgeInsets.only(bottom: 12),
+                                 padding: const EdgeInsets.all(10),
+                                 decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade700), borderRadius: BorderRadius.circular(12)),
+                                 child: Column(
+                                   crossAxisAlignment: CrossAxisAlignment.start,
+                                   children: [
+                                     // Tampilkan Soal Acak per Nomor (Hanya jika Berhasil Diparse)
+                                     if (isParsed) ...[
+                                       Text(item["text"], style: const TextStyle(fontSize: 13)),
+                                       const SizedBox(height: 10),
+                                     ],
+                                     Row(
+                                       children: [
+                                         SizedBox(
+                                           width: 75,
+                                           child: Text(isParsed ? "Jawaban:" : "Soal $displayNum:", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                         ),
+                                         const SizedBox(width: 4),
+                                         Expanded(
+                                           child: Row(
+                                             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                             children: ["A", "B", "C", "D"].map((opt) {
+                                               bool isSelected = userAnswers[actualQuestionIndex] == opt;
+                                               return InkWell(
+                                                 onTap: () => setModalState(() => userAnswers[actualQuestionIndex] = opt),
+                                                 child: CircleAvatar(
+                                                   radius: 18,
+                                                   backgroundColor: isSelected ? const Color(0xFF616BF2) : Colors.grey.shade800,
+                                                   child: Text(opt, style: TextStyle(color: isSelected ? Colors.white : Colors.white70, fontWeight: FontWeight.bold)),
+                                                 ),
+                                               );
+                                             }).toList(),
+                                           ),
+                                         )
+                                       ],
+                                     )
+                                   ]
+                                 )
+                               );
+                            } else {
+                               // Bagian Essay
+                               return Container(
+                                  margin: const EdgeInsets.only(bottom: 12),
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade700), borderRadius: BorderRadius.circular(12)),
+                                  child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
                                         Text("Jawaban Essay Soal $displayNum:", style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -1662,7 +1815,8 @@ ATURAN KETAT UNTUK SISWA:
                                         )
                                       ],
                                   ),
-                            );
+                               );
+                            }
                           },
                         ),
                       ],
@@ -1674,77 +1828,18 @@ ATURAN KETAT UNTUK SISWA:
                   height: 50,
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF616BF2)),
-                    onPressed: () async {
+                    onPressed: isSubmitting ? null : () async {
                       if (answeredCount < totalQuestions && remainingSeconds > 0) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(content: Text("Lengkapi dulu jawaban! Masih ada ${totalQuestions - answeredCount} soal belum diisi.")),
                         );
                         return;
                       }
-
-                      examTimer?.cancel();
-                      Navigator.pop(context);
-                      
-                      String ansSummary = "";
-                      int? finalScore;
-                      int correctCount = 0;
-
-                      if (taskType == "Pilihan Ganda") {
-                          List<int> wrongNumbers = [];
-                          for (int i = 0; i < totalQuestions; i++) {
-                            int actualIndex = shuffledIndices[i];
-                            String studentAns = userAnswers[actualIndex] ?? "";
-                            String correctAns = actualIndex < answerKeys.length ? answerKeys[actualIndex].toString() : "";
-                            
-                            if (studentAns == correctAns) {
-                              correctCount++;
-                            } else {
-                              wrongNumbers.add(i + 1);
-                            }
-                          }
-                          finalScore = ((correctCount / totalQuestions) * 100).round();
-                          ansSummary = userAnswers.entries.map((e) => "Soal Asli No ${e.key + 1}: ${e.value}").join(", ");
-                          
-                          setState(() {
-                            _messages.add({
-                              'sender': 'ai',
-                              'text': 'Tugas "$title" telah berhasil diserahkan!\nNilai Kamu: $finalScore/100 (Benar $correctCount dari $totalQuestions soal).\n${wrongNumbers.isNotEmpty ? "Nomor urut di layar yang perlu diperbaiki: " + wrongNumbers.join(", ") : "Sempurna! Semua benar 100."}'
-                            });
-                          });
-                      } else {
-                          List<String> essayAnswers = [];
-                          essayControllers.forEach((key, ctrl) {
-                              essayAnswers.add("Soal $key: ${ctrl.text}");
-                          });
-                          ansSummary = essayAnswers.join("\n\n");
-                          
-                          setState(() {
-                            _messages.add({
-                              'sender': 'ai',
-                              'text': 'Tugas Essay "$title" telah berhasil diserahkan ke Guru Informatika! (Saran AI: Menunggu validasi manual dari Mas Kahfi).'
-                            });
-                          });
-                      }
-
-                      String currentClassStr = studentClass ?? "Kelas 10";
-                      
-                      await http.post(
-                        Uri.parse("$_firebaseUrl/submissions.json"),
-                        body: jsonEncode({
-                          "task_id": taskId,
-                          "username": username,
-                          "student": "$displayName ($username - $currentClassStr)",
-                          "type": taskType,
-                          "answers": ansSummary,
-                          "score": finalScore,
-                          "correct": correctCount,
-                          "total": totalQuestions,
-                          "submitted_at": DateTime.now().toString()
-                        }),
-                      );
-                      _scrollToBottom();
+                      await performSubmit();
                     },
-                    child: const Text("KIRIM JAWABAN SAYA", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    child: isSubmitting 
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
+                        : const Text("KIRIM JAWABAN SAYA", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                   ),
                 )
               ],
